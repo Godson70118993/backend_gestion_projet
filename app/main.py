@@ -1,26 +1,27 @@
 # app/main.py
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import func, case
 from . import crud, models, schemas
 from .database import engine
 from .dependencies import get_db, get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 
-# Création des tables dans la base de données
+# Crée les tables dans la base de données au démarrage de l'application
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="API de Gestion de Projets", version="1.0.0")
+app = FastAPI(title="API de Gestion de Projets", version="1.1.0")
 
-# Configuration CORS UNIQUE - permettre à la fois React et Vite
+# Configuration CORS pour permettre les requêtes depuis différents frontends
 origins = [
-    "http://localhost:3000",    # React dev server
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://localhost:5173",    # Vite dev server  
+    "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "https://frontend-gestion-projet.vercel.app/", # URL de production de l'application Vite
-    "https://backend-gestion-projet-3.onrender.com"  # URL de production de l'API
+    "https://frontend-gestion-projet.vercel.app", # URL de production du frontend
+    "https://backend-gestion-projet-4.onrender.com" # URL de production du backend
 ]
 
 app.add_middleware(
@@ -33,13 +34,13 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
+    """Point d'entrée de l'API"""
     return {"message": "Bienvenue sur l'API de gestion de projets !"}
 
 # Routes d'authentification
 @app.post("/register", response_model=schemas.User)
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     """Inscription d'un nouvel utilisateur"""
-    # Vérifier si l'email existe déjà
     db_user = crud.get_user_by_email(db, email=user.email)
     if db_user:
         raise HTTPException(
@@ -47,36 +48,18 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
             detail="Un compte avec cet email existe déjà"
         )
     
-    # Vérifier si le nom d'utilisateur existe déjà
     db_user_username = crud.get_user_by_username(db, username=user.username)
     if db_user_username:
         raise HTTPException(
             status_code=400,
-            detail="Ce nom d'utilisateur est already pris"
+            detail="Ce nom d'utilisateur est déjà pris"
         )
     
     return crud.create_user(db=db, user=user)
 
 @app.post("/login", response_model=schemas.Token)
 def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
-    """Connexion d'un utilisateur"""
-    user = crud.authenticate_user(db, user_credentials.email, user_credentials.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": str(user.id)}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/token", response_model=schemas.Token)
-def login_for_access_token(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
-    """Connexion d'un utilisateur (route alternative pour /token)"""
+    """Connexion d'un utilisateur et création d'un token d'accès"""
     user = crud.authenticate_user(db, user_credentials.email, user_credentials.password)
     if not user:
         raise HTTPException(
@@ -158,14 +141,13 @@ def delete_project(
 @app.get("/projects/{project_id}/tasks", response_model=list[schemas.Task])
 def get_project_tasks(
     project_id: int,
-    status: Optional[str] = None,  # Filtrer par statut optionnel
+    status: Optional[str] = None,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Récupère toutes les tâches d'un projet (avec filtre optionnel par statut)"""
     tasks = crud.get_tasks_by_project(db, project_id=project_id, user_id=current_user.id)
     
-    # Filtrer par statut si spécifié
     if status:
         tasks = [task for task in tasks if task.status.value == status]
     
@@ -226,38 +208,33 @@ def delete_task(
 def health_check():
     return {"status": "healthy"}
 
-# Route pour les statistiques utilisateur avec les nouveaux statuts
+# Route pour les statistiques utilisateur - OPTIMISÉE
 @app.get("/stats")
 def get_user_stats(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Récupère les statistiques de l'utilisateur avec les dates et statuts"""
-    projects = crud.get_projects_by_user(db, user_id=current_user.id)
-    
-    total_projects = len(projects)
-    
-    # Compter les tâches par statut
-    all_tasks = []
-    for project in projects:
-        all_tasks.extend(project.tasks)
-    
-    total_tasks = len(all_tasks)
-    tasks_a_faire = len([task for task in all_tasks if task.status.value == "a_faire"])
-    tasks_en_cours = len([task for task in all_tasks if task.status.value == "en_cours"])
-    tasks_terminees = len([task for task in all_tasks if task.status.value == "termine"])
-    
-    # Tâches en retard (échéance dépassée)
-    from datetime import datetime
+    """Récupère les statistiques de l'utilisateur avec des requêtes de base de données optimisées"""
+    user_id = current_user.id
     now = datetime.utcnow()
-    tasks_en_retard = len([
-        task for task in all_tasks 
-        if task.due_date and task.due_date < now and task.status.value != "termine"
-    ])
+
+    # Compter les projets
+    total_projects = db.query(models.Project).filter(models.Project.owner_id == user_id).count()
     
-    # Projet le plus récent
-    latest_project = max(projects, key=lambda p: p.created_at) if projects else None
+    # Compter les tâches par statut directement dans la base de données
+    tasks_counts = db.query(
+        func.count(case((models.Task.status == "a_faire", 1))),
+        func.count(case((models.Task.status == "en_cours", 1))),
+        func.count(case((models.Task.status == "termine", 1))),
+        func.count(case(((models.Task.due_date < now) & (models.Task.status != "termine"), 1)))
+    ).join(models.Project).filter(models.Project.owner_id == user_id).first()
     
+    tasks_a_faire, tasks_en_cours, tasks_terminees, tasks_en_retard = tasks_counts if tasks_counts else (0, 0, 0, 0)
+    total_tasks = tasks_a_faire + tasks_en_cours + tasks_terminees
+    
+    # Récupérer le projet le plus récent
+    latest_project = db.query(models.Project).filter(models.Project.owner_id == user_id).order_by(models.Project.created_at.desc()).first()
+
     return {
         "user_since": current_user.created_at,
         "total_projects": total_projects,

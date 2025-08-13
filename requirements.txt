@@ -1,5 +1,5 @@
-fastapi[all]==0.104.1
-sqlalchemy==2.0.23
+fastapi==0.104.1
+sqlalchemy>=2.0.24  # Or a more recent version
 psycopg2-binary==2.9.9
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0

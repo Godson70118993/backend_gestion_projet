@@ -19,6 +19,8 @@ origins = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",    # Vite dev server  
     "http://127.0.0.1:5173",
+    "https://frontend-gestion-projet.vercel.app/", # URL de production de l'application Vite
+    "https://backend-gestion-projet-3.onrender.com"  # URL de production de l'API
 ]
 
 app.add_middleware(

@@ -24,16 +24,16 @@ class User(Base):
     reset_tokens = relationship("PasswordResetToken", back_populates="user", cascade="all, delete-orphan")
 
 class PasswordResetToken(Base):
-    """Modèle pour stocker les tokens de réinitialisation de mot de passe"""
     __tablename__ = "password_reset_tokens"
-
+    
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    token_hash = Column(String(255), nullable=False, index=True)  # Hash SHA256 du token
-    expires_at = Column(DateTime, nullable=False, index=True)
-    is_used = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
-    used_at = Column(DateTime, nullable=True)
+    token = Column(String, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    expires_at = Column(DateTime(timezone=True))
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User", back_populates="reset_tokens")
 
 class Project(Base):
     __tablename__ = "projects"

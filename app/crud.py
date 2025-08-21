@@ -1,22 +1,24 @@
-# app/crud.py
+# app/crud.py - Version avec hashlib seulement
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import secrets
 from . import models, schemas
 import hashlib
 
-# Configuration pour le hachage des mots de passe
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Fonctions utilitaires pour les mots de passe
+# Fonctions utilitaires pour les mots de passe avec hashlib
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Vérifie si le mot de passe en clair correspond au hash"""
-    return pwd_context.verify(plain_password, hashed_password)
+    # Extraire le salt des 32 premiers caractères
+    salt = hashed_password[:32]
+    # Recalculer le hash
+    calculated_hash = salt + hashlib.sha256((salt + plain_password).encode()).hexdigest()
+    return calculated_hash == hashed_password
 
 def get_password_hash(password: str) -> str:
-    """Hash un mot de passe"""
-    return pwd_context.hash(password)
+    """Hash un mot de passe avec un salt aléatoire"""
+    salt = secrets.token_hex(16)  # 32 caractères
+    hashed = salt + hashlib.sha256((salt + password).encode()).hexdigest()
+    return hashed
 
 # CRUD pour les utilisateurs
 def get_user_by_email(db: Session, email: str):
@@ -69,9 +71,6 @@ def create_password_reset_token(db: Session, user_id: int) -> str:
     # Générer un token sécurisé
     token = secrets.token_urlsafe(32)
     
-    # Hash du token pour le stockage sécurisé
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    
     # Expiration dans 1 heure
     expires_at = datetime.utcnow() + timedelta(hours=1)
     
@@ -80,10 +79,10 @@ def create_password_reset_token(db: Session, user_id: int) -> str:
         models.PasswordResetToken.user_id == user_id
     ).delete()
     
-    # Créer le nouveau token
+    # Créer le nouveau token - utilise 'token' (champ existant)
     db_token = models.PasswordResetToken(
         user_id=user_id,
-        token_hash=token_hash,
+        token=token,  # Utilise le champ 'token' existant
         expires_at=expires_at,
         is_used=False
     )
@@ -91,13 +90,12 @@ def create_password_reset_token(db: Session, user_id: int) -> str:
     db.add(db_token)
     db.commit()
     
-    return token  # Retourne le token non hashé pour l'envoi par email
+    return token
 
 def get_valid_reset_token(db: Session, token: str):
     """Récupère un token de réinitialisation valide"""
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
     return db.query(models.PasswordResetToken).filter(
-        models.PasswordResetToken.token_hash == token_hash,
+        models.PasswordResetToken.token == token,  # Utilise le champ 'token' existant
         models.PasswordResetToken.is_used == False,
         models.PasswordResetToken.expires_at > datetime.utcnow()
     ).first()

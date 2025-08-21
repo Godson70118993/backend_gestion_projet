@@ -1,4 +1,4 @@
-# app/main.py - Version améliorée pour la gestion des emails
+# app/main.py - Version corrigée sans duplication de routes
 
 from datetime import timedelta, datetime
 from typing import Optional
@@ -31,6 +31,159 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="API de Gestion de Projets", version="1.1.0")
 
+
+@app.get("/")
+def read_root():
+    """Point d'entrée de l'API"""
+    return {"message": "Bienvenue sur l'API de gestion de projets !"}
+
+# Routes d'authentification
+@app.post("/register", response_model=schemas.User)
+def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    """Inscription d'un nouvel utilisateur"""
+    db_user = crud.get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Un compte avec cet email existe déjà"
+        )
+    
+    db_user_username = crud.get_user_by_username(db, username=user.username)
+    if db_user_username:
+        raise HTTPException(
+            status_code=400,
+            detail="Ce nom d'utilisateur est déjà pris"
+        )
+    
+    return crud.create_user(db=db, user=user)
+
+@app.post("/login", response_model=schemas.Token)
+def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
+    """Connexion d'un utilisateur et création d'un token d'accès"""
+    user = crud.authenticate_user(db, user_credentials.email, user_credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email ou mot de passe incorrect",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": str(user.id)}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/me", response_model=schemas.User)
+def read_users_me(current_user: models.User = Depends(get_current_user)):
+    """Récupère les informations de l'utilisateur connecté"""
+    return current_user
+
+# Routes pour la réinitialisation de mot de passe (UNE SEULE VERSION)
+@app.post("/forgot-password", response_model=schemas.ForgotPasswordResponse)
+async def forgot_password(
+    request: schemas.ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Endpoint amélioré pour demander une réinitialisation de mot de passe"""
+    
+    logger.info(f"🔄 Demande de réinitialisation pour: {request.email}")
+    
+    # Vérifier la configuration email
+    if not email_config_ok:
+        logger.error("❌ Configuration email manquante")
+        raise HTTPException(
+            status_code=500,
+            detail="Service d'email non configuré. Contactez l'administrateur."
+        )
+    
+    # Vérifier si l'utilisateur existe
+    user = crud.get_user_by_email(db, request.email)
+    if not user:
+        logger.warning(f"⚠️ Tentative de réinitialisation pour email inexistant: {request.email}")
+        # Pour la sécurité, on renvoie toujours le même message
+        return {"message": "Si cet email existe dans notre système, un lien de réinitialisation a été envoyé."}
+    
+    logger.info(f"✅ Utilisateur trouvé: {user.username} (ID: {user.id})")
+    
+    try:
+        # Créer un token de réinitialisation
+        token = crud.create_password_reset_token(db, user.id)
+        logger.info(f"🔑 Token de réinitialisation créé: {token[:10]}...")
+        
+        # Envoyer l'email en arrière-plan
+        send_reset_email(request.email, token, background_tasks)
+        
+        logger.info(f"📧 Tâche d'email ajoutée en arrière-plan pour {request.email}")
+        
+        return {"message": "Si cet email existe dans notre système, un lien de réinitialisation a été envoyé."}
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la création du token ou envoi d'email: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur interne du serveur. Veuillez réessayer plus tard."
+        )
+
+@app.post("/reset-password", response_model=schemas.ResetPasswordResponse)
+async def reset_password(
+    request: schemas.ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Endpoint pour réinitialiser le mot de passe avec un token"""
+    
+    logger.info(f"🔄 Tentative de réinitialisation avec token: {request.token[:10]}...")
+    
+    # Validation renforcée du nouveau mot de passe
+    if len(request.new_password) < 8:
+        raise HTTPException(
+            status_code=400, 
+            detail="Le mot de passe doit contenir au moins 8 caractères"
+        )
+    
+    if not any(c.islower() for c in request.new_password):
+        raise HTTPException(
+            status_code=400, 
+            detail="Le mot de passe doit contenir au moins une lettre minuscule"
+        )
+    
+    if not any(c.isupper() for c in request.new_password):
+        raise HTTPException(
+            status_code=400, 
+            detail="Le mot de passe doit contenir au moins une lettre majuscule"
+        )
+    
+    if not any(c.isdigit() for c in request.new_password):
+        raise HTTPException(
+            status_code=400, 
+            detail="Le mot de passe doit contenir au moins un chiffre"
+        )
+    
+    # Utiliser le token pour changer le mot de passe
+    try:
+        success = crud.use_reset_token(db, request.token, request.new_password)
+        
+        if not success:
+            logger.warning(f"⚠️ Échec de réinitialisation avec token: {request.token[:10]}...")
+            raise HTTPException(
+                status_code=400, 
+                detail="Token invalide, expiré ou déjà utilisé"
+            )
+        
+        logger.info(f"✅ Mot de passe réinitialisé avec succès pour token: {request.token[:10]}...")
+        return {"message": "Mot de passe réinitialisé avec succès"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la réinitialisation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur interne du serveur. Veuillez réessayer plus tard."
+        )
+
+
 # Configuration CORS
 origins = [
     "http://localhost:3000",
@@ -38,7 +191,7 @@ origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://frontend-gestion-projet.vercel.app",
-    "https://backend-gestion-projet-7.onrender.com"
+    "https://backend-gestion-projet-8.onrender.com"
 ]
 
 app.add_middleware(
@@ -311,110 +464,6 @@ async def send_reset_email_background(email: str, token: str):
     except Exception as e:
         logger.error(f"❌ Erreur dans la tâche d'arrière-plan d'email: {e}")
 
-# Routes d'authentification...
-
-@app.post("/forgot-password", response_model=schemas.ForgotPasswordResponse)
-async def forgot_password(
-    request: schemas.ForgotPasswordRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """Endpoint amélioré pour demander une réinitialisation de mot de passe"""
-    
-    logger.info(f"🔄 Demande de réinitialisation pour: {request.email}")
-    
-    # Vérifier la configuration email
-    if not email_config_ok:
-        logger.error("❌ Configuration email manquante")
-        raise HTTPException(
-            status_code=500,
-            detail="Service d'email non configuré. Contactez l'administrateur."
-        )
-    
-    # Vérifier si l'utilisateur existe
-    user = crud.get_user_by_email(db, request.email)
-    if not user:
-        logger.warning(f"⚠️ Tentative de réinitialisation pour email inexistant: {request.email}")
-        # Pour la sécurité, on renvoie toujours le même message
-        return {"message": "Si cet email existe dans notre système, un lien de réinitialisation a été envoyé."}
-    
-    logger.info(f"✅ Utilisateur trouvé: {user.username} (ID: {user.id})")
-    
-    try:
-        # Créer un token de réinitialisation
-        token = crud.create_password_reset_token(db, user.id)
-        logger.info(f"🔑 Token de réinitialisation créé: {token[:10]}...")
-        
-        # Envoyer l'email en arrière-plan
-        send_reset_email(request.email, token, background_tasks)
-        
-        logger.info(f"📧 Tâche d'email ajoutée en arrière-plan pour {request.email}")
-        
-        return {"message": "Si cet email existe dans notre système, un lien de réinitialisation a été envoyé."}
-        
-    except Exception as e:
-        logger.error(f"❌ Erreur lors de la création du token ou envoi d'email: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Erreur interne du serveur. Veuillez réessayer plus tard."
-        )
-
-@app.post("/reset-password", response_model=schemas.ResetPasswordResponse)
-async def reset_password(
-    request: schemas.ResetPasswordRequest,
-    db: Session = Depends(get_db)
-):
-    """Endpoint pour réinitialiser le mot de passe avec un token"""
-    
-    logger.info(f"🔄 Tentative de réinitialisation avec token: {request.token[:10]}...")
-    
-    # Validation renforcée du nouveau mot de passe
-    if len(request.new_password) < 8:
-        raise HTTPException(
-            status_code=400, 
-            detail="Le mot de passe doit contenir au moins 8 caractères"
-        )
-    
-    if not any(c.islower() for c in request.new_password):
-        raise HTTPException(
-            status_code=400, 
-            detail="Le mot de passe doit contenir au moins une lettre minuscule"
-        )
-    
-    if not any(c.isupper() for c in request.new_password):
-        raise HTTPException(
-            status_code=400, 
-            detail="Le mot de passe doit contenir au moins une lettre majuscule"
-        )
-    
-    if not any(c.isdigit() for c in request.new_password):
-        raise HTTPException(
-            status_code=400, 
-            detail="Le mot de passe doit contenir au moins un chiffre"
-        )
-    
-    # Utiliser le token pour changer le mot de passe
-    try:
-        success = crud.use_reset_token(db, request.token, request.new_password)
-        
-        if not success:
-            logger.warning(f"⚠️ Échec de réinitialisation avec token: {request.token[:10]}...")
-            raise HTTPException(
-                status_code=400, 
-                detail="Token invalide, expiré ou déjà utilisé"
-            )
-        
-        logger.info(f"✅ Mot de passe réinitialisé avec succès pour token: {request.token[:10]}...")
-        return {"message": "Mot de passe réinitialisé avec succès"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Erreur lors de la réinitialisation: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Erreur interne du serveur. Veuillez réessayer plus tard."
-        )
 
 # Route de test pour l'email (à supprimer en production)
 @app.post("/test-email")
@@ -428,103 +477,6 @@ async def test_email(email: str = "test@example.com"):
         return {"success": success, "message": "Test d'email terminé"}
     except Exception as e:
         return {"error": str(e)}
-        
-        
-# Le reste de votre code reste identique...
-@app.get("/")
-def read_root():
-    """Point d'entrée de l'API"""
-    return {"message": "Bienvenue sur l'API de gestion de projets !"}
-
-# Routes d'authentification
-@app.post("/register", response_model=schemas.User)
-def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    """Inscription d'un nouvel utilisateur"""
-    db_user = crud.get_user_by_email(db, email=user.email)
-    if db_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Un compte avec cet email existe déjà"
-        )
-    
-    db_user_username = crud.get_user_by_username(db, username=user.username)
-    if db_user_username:
-        raise HTTPException(
-            status_code=400,
-            detail="Ce nom d'utilisateur est déjà pris"
-        )
-    
-    return crud.create_user(db=db, user=user)
-
-@app.post("/login", response_model=schemas.Token)
-def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db)):
-    """Connexion d'un utilisateur et création d'un token d'accès"""
-    user = crud.authenticate_user(db, user_credentials.email, user_credentials.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email ou mot de passe incorrect",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": str(user.id)}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.get("/me", response_model=schemas.User)
-def read_users_me(current_user: models.User = Depends(get_current_user)):
-    """Récupère les informations de l'utilisateur connecté"""
-    return current_user
-
-# Routes pour la réinitialisation de mot de passe
-@app.post("/forgot-password", response_model=schemas.ForgotPasswordResponse)
-async def forgot_password(
-    request: schemas.ForgotPasswordRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    """Endpoint pour demander une réinitialisation de mot de passe"""
-    
-    # Vérifier si l'utilisateur existe
-    user = crud.get_user_by_email(db, request.email)
-    if not user:
-        # Pour des raisons de sécurité, on ne révèle pas si l'email existe
-        return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé."}
-    
-    # Créer un token de réinitialisation
-    token = crud.create_password_reset_token(db, user.id)
-    
-    # Envoyer l'email en arrière-plan
-    send_reset_email(request.email, token, background_tasks)
-    
-    return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé."}
-
-@app.post("/reset-password", response_model=schemas.ResetPasswordResponse)
-async def reset_password(
-    request: schemas.ResetPasswordRequest,
-    db: Session = Depends(get_db)
-):
-    """Endpoint pour réinitialiser le mot de passe avec un token"""
-    
-    # Valider le nouveau mot de passe
-    if len(request.new_password) < 8:
-        raise HTTPException(
-            status_code=400, 
-            detail="Le mot de passe doit contenir au moins 8 caractères"
-        )
-    
-    # Utiliser le token pour changer le mot de passe
-    success = crud.use_reset_token(db, request.token, request.new_password)
-    
-    if not success:
-        raise HTTPException(
-            status_code=400, 
-            detail="Token invalide ou expiré"
-        )
-    
-    return {"message": "Mot de passe réinitialisé avec succès"}
 
 # Routes pour les projets
 @app.get("/projects", response_model=list[schemas.Project])

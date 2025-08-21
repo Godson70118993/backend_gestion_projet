@@ -1,10 +1,19 @@
 # app/main.py
 from datetime import timedelta, datetime
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import os
+
+# AJOUTEZ CES LIGNES AU DÉBUT
+from dotenv import load_dotenv
+load_dotenv()  # Charge les variables du fichier .env
+
 from . import crud, models, schemas
 from .database import engine
 from .dependencies import get_db, get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
@@ -21,7 +30,7 @@ origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://frontend-gestion-projet.vercel.app", # URL de production du frontend
-    "https://backend-gestion-projet-4.onrender.com" # URL de production du backend
+    "https://backend-gestion-projet-6.onrender.com" # URL de production du backend
 ]
 
 app.add_middleware(
@@ -32,6 +41,135 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Configuration email - maintenant les variables seront chargées depuis .env
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5173")
+
+# AJOUTEZ CETTE FONCTION DE DEBUG (optionnel)
+def check_email_config():
+    """Fonction pour vérifier la configuration email au démarrage"""
+    if not SMTP_USERNAME or not SMTP_PASSWORD:
+        print("⚠️  ATTENTION: Configuration email manquante!")
+        print("   Vérifiez votre fichier .env")
+        print(f"   SMTP_USERNAME: {'✓' if SMTP_USERNAME else '✗'}")
+        print(f"   SMTP_PASSWORD: {'✓' if SMTP_PASSWORD else '✗'}")
+    else:
+        print("✅ Configuration email OK")
+        print(f"   Email configuré: {SMTP_USERNAME}")
+
+# Appeler la vérification au démarrage
+check_email_config()
+
+def send_reset_email(email: str, token: str, background_tasks: BackgroundTasks):
+    """Envoie l'email de réinitialisation en arrière-plan"""
+    background_tasks.add_task(send_email_async, email, token)
+
+def send_email_async(email: str, token: str):
+    """Fonction asynchrone pour envoyer l'email avec gestion d'erreur améliorée"""
+    try:
+        # Vérifier que les credentials email sont configurés
+        if not SMTP_USERNAME or not SMTP_PASSWORD:
+            print("❌ Configuration email manquante - Email non envoyé")
+            print("Vérifiez votre fichier .env et redémarrez l'application")
+            return
+        
+        print(f"🔄 Tentative d'envoi d'email à {email}...")
+        print(f"📧 Serveur SMTP: {SMTP_SERVER}:{SMTP_PORT}")
+        print(f"👤 Utilisateur: {SMTP_USERNAME}")
+        
+        # Créer le message
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = email
+        msg['Subject'] = "Réinitialisation de votre mot de passe"
+        
+        # URL de réinitialisation
+        reset_url = f"{FRONTEND_URL}/reset-password?token={token}"
+        
+        # Contenu HTML de l'email
+        html_body = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
+                    <h1 style="color: white; margin: 0;">Réinitialisation de mot de passe</h1>
+                </div>
+                
+                <div style="padding: 30px; background-color: #f9f9f9;">
+                    <h2 style="color: #333;">Bonjour,</h2>
+                    <p style="color: #666; line-height: 1.6;">
+                        Vous avez demandé à réinitialiser votre mot de passe. 
+                        Cliquez sur le bouton ci-dessous pour créer un nouveau mot de passe :
+                    </p>
+                    
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="{reset_url}" 
+                           style="background: #667eea; color: white; padding: 12px 30px; 
+                                  text-decoration: none; border-radius: 5px; font-weight: bold;
+                                  display: inline-block;">
+                            Réinitialiser mon mot de passe
+                        </a>
+                    </div>
+                    
+                    <p style="color: #666; line-height: 1.6;">
+                        Si le bouton ne fonctionne pas, copiez et collez ce lien dans votre navigateur :<br>
+                        <a href="{reset_url}" style="color: #667eea;">{reset_url}</a>
+                    </p>
+                    
+                    <p style="color: #999; font-size: 14px; margin-top: 30px;">
+                        Ce lien expire dans 1 heure pour des raisons de sécurité.<br>
+                        Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.
+                    </p>
+                </div>
+                
+                <div style="background: #333; color: white; padding: 20px; text-align: center;">
+                    <p style="margin: 0; font-size: 14px;">
+                        © 2024 Votre Application de Gestion de Projets
+                    </p>
+                </div>
+            </body>
+        </html>
+        """
+        
+        msg.attach(MIMEText(html_body, 'html'))
+        
+        # Envoyer l'email
+        print("🔐 Connexion au serveur SMTP...")
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        
+        print("🔑 Authentification...")
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        
+        print("📤 Envoi de l'email...")
+        server.send_message(msg)
+        server.quit()
+        
+        print(f"✅ Email de réinitialisation envoyé avec succès à {email}")
+        
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"❌ Erreur d'authentification SMTP: {e}")
+        print("🔍 Solutions possibles :")
+        print("   1. Vérifiez vos identifiants Gmail")
+        print("   2. Utilisez un mot de passe d'application (pas votre mot de passe Gmail)")
+        print("   3. Activez la validation en 2 étapes sur votre compte Google")
+        print("   4. Créez un nouveau mot de passe d'application")
+        
+    except smtplib.SMTPConnectError as e:
+        print(f"❌ Erreur de connexion SMTP: {e}")
+        print("🔍 Vérifiez votre connexion internet et les paramètres SMTP")
+        
+    except smtplib.SMTPException as e:
+        print(f"❌ Erreur SMTP générale: {e}")
+        
+    except Exception as e:
+        print(f"❌ Erreur inattendue lors de l'envoi de l'email: {e}")
+        print(f"Type d'erreur: {type(e).__name__}")
+        
+        
+# Le reste de votre code reste identique...
 @app.get("/")
 def read_root():
     """Point d'entrée de l'API"""
@@ -78,6 +216,54 @@ def login_user(user_credentials: schemas.UserLogin, db: Session = Depends(get_db
 def read_users_me(current_user: models.User = Depends(get_current_user)):
     """Récupère les informations de l'utilisateur connecté"""
     return current_user
+
+# Routes pour la réinitialisation de mot de passe
+@app.post("/forgot-password", response_model=schemas.ForgotPasswordResponse)
+async def forgot_password(
+    request: schemas.ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Endpoint pour demander une réinitialisation de mot de passe"""
+    
+    # Vérifier si l'utilisateur existe
+    user = crud.get_user_by_email(db, request.email)
+    if not user:
+        # Pour des raisons de sécurité, on ne révèle pas si l'email existe
+        return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé."}
+    
+    # Créer un token de réinitialisation
+    token = crud.create_password_reset_token(db, user.id)
+    
+    # Envoyer l'email en arrière-plan
+    send_reset_email(request.email, token, background_tasks)
+    
+    return {"message": "Si cet email existe, un lien de réinitialisation a été envoyé."}
+
+@app.post("/reset-password", response_model=schemas.ResetPasswordResponse)
+async def reset_password(
+    request: schemas.ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Endpoint pour réinitialiser le mot de passe avec un token"""
+    
+    # Valider le nouveau mot de passe
+    if len(request.new_password) < 8:
+        raise HTTPException(
+            status_code=400, 
+            detail="Le mot de passe doit contenir au moins 8 caractères"
+        )
+    
+    # Utiliser le token pour changer le mot de passe
+    success = crud.use_reset_token(db, request.token, request.new_password)
+    
+    if not success:
+        raise HTTPException(
+            status_code=400, 
+            detail="Token invalide ou expiré"
+        )
+    
+    return {"message": "Mot de passe réinitialisé avec succès"}
 
 # Routes pour les projets
 @app.get("/projects", response_model=list[schemas.Project])

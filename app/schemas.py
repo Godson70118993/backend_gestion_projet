@@ -29,6 +29,20 @@ class User(UserBase):
     class Config:
         from_attributes = True
 
+# Schémas pour la réinitialisation de mot de passe
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+
+class ResetPasswordResponse(BaseModel):
+    message: str
+
 # Schémas pour les tâches
 class TaskBase(BaseModel):
     title: str

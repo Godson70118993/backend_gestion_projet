@@ -1,6 +1,8 @@
 # app/crud.py
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
+from datetime import datetime, timedelta
+import secrets
 from . import models, schemas
 
 # Configuration pour le hachage des mots de passe
@@ -46,6 +48,79 @@ def authenticate_user(db: Session, email: str, password: str):
     if not user or not verify_password(password, user.hashed_password):
         return False
     return user
+
+def update_user_password(db: Session, user_id: int, new_password: str):
+    """Met à jour le mot de passe d'un utilisateur"""
+    user = get_user_by_id(db, user_id)
+    if not user:
+        return False
+    
+    user.hashed_password = get_password_hash(new_password)
+    db.commit()
+    db.refresh(user)
+    return True
+
+# CRUD pour les tokens de réinitialisation de mot de passe
+def generate_reset_token() -> str:
+    """Génère un token sécurisé pour la réinitialisation"""
+    return secrets.token_urlsafe(32)
+
+def create_password_reset_token(db: Session, user_id: int) -> str:
+    """Crée un nouveau token de réinitialisation pour un utilisateur"""
+    # Supprimer les anciens tokens non utilisés pour cet utilisateur
+    db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.user_id == user_id,
+        models.PasswordResetToken.is_used == False
+    ).delete()
+    
+    # Générer un nouveau token
+    token = generate_reset_token()
+    expires_at = datetime.utcnow() + timedelta(hours=1)  # Expire dans 1 heure
+    
+    # Sauvegarder le token en base
+    reset_token = models.PasswordResetToken(
+        token=token,
+        user_id=user_id,
+        expires_at=expires_at
+    )
+    db.add(reset_token)
+    db.commit()
+    
+    return token
+
+def get_valid_reset_token(db: Session, token: str):
+    """Récupère un token de réinitialisation valide"""
+    return db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.token == token,
+        models.PasswordResetToken.is_used == False,
+        models.PasswordResetToken.expires_at > datetime.utcnow()
+    ).first()
+
+def use_reset_token(db: Session, token: str, new_password: str) -> bool:
+    """Utilise un token de réinitialisation pour changer le mot de passe"""
+    reset_token = get_valid_reset_token(db, token)
+    if not reset_token:
+        return False
+    
+    # Récupérer l'utilisateur
+    user = get_user_by_id(db, reset_token.user_id)
+    if not user:
+        return False
+    
+    # Mettre à jour le mot de passe
+    user.hashed_password = get_password_hash(new_password)
+    
+    # Marquer le token comme utilisé
+    reset_token.is_used = True
+    
+    # Supprimer tous les autres tokens de cet utilisateur pour des raisons de sécurité
+    db.query(models.PasswordResetToken).filter(
+        models.PasswordResetToken.user_id == user.id,
+        models.PasswordResetToken.id != reset_token.id
+    ).delete()
+    
+    db.commit()
+    return True
 
 # CRUD pour les projets
 def get_projects_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):

@@ -4,17 +4,19 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import secrets
 from . import models, schemas
+import hashlib
 
 # Configuration pour le hachage des mots de passe
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# Fonctions utilitaires pour les mots de passe
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Vérifie si le mot de passe en clair correspond au hash"""
+    return pwd_context.verify(plain_password, hashed_password)
+
 def get_password_hash(password: str) -> str:
     """Hash un mot de passe"""
     return pwd_context.hash(password)
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Vérifie si un mot de passe correspond à son hash"""
-    return pwd_context.verify(plain_password, hashed_password)
 
 # CRUD pour les utilisateurs
 def get_user_by_email(db: Session, email: str):
@@ -61,37 +63,41 @@ def update_user_password(db: Session, user_id: int, new_password: str):
     return True
 
 # CRUD pour les tokens de réinitialisation de mot de passe
-def generate_reset_token() -> str:
-    """Génère un token sécurisé pour la réinitialisation"""
-    return secrets.token_urlsafe(32)
-
 def create_password_reset_token(db: Session, user_id: int) -> str:
-    """Crée un nouveau token de réinitialisation pour un utilisateur"""
-    # Supprimer les anciens tokens non utilisés pour cet utilisateur
+    """Crée un token de réinitialisation de mot de passe"""
+    
+    # Générer un token sécurisé
+    token = secrets.token_urlsafe(32)
+    
+    # Hash du token pour le stockage sécurisé
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    
+    # Expiration dans 1 heure
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+    
+    # Supprimer les anciens tokens pour cet utilisateur
     db.query(models.PasswordResetToken).filter(
-        models.PasswordResetToken.user_id == user_id,
-        models.PasswordResetToken.is_used == False
+        models.PasswordResetToken.user_id == user_id
     ).delete()
     
-    # Générer un nouveau token
-    token = generate_reset_token()
-    expires_at = datetime.utcnow() + timedelta(hours=1)  # Expire dans 1 heure
-    
-    # Sauvegarder le token en base
-    reset_token = models.PasswordResetToken(
-        token=token,
+    # Créer le nouveau token
+    db_token = models.PasswordResetToken(
         user_id=user_id,
-        expires_at=expires_at
+        token_hash=token_hash,
+        expires_at=expires_at,
+        is_used=False
     )
-    db.add(reset_token)
+    
+    db.add(db_token)
     db.commit()
     
-    return token
+    return token  # Retourne le token non hashé pour l'envoi par email
 
 def get_valid_reset_token(db: Session, token: str):
     """Récupère un token de réinitialisation valide"""
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
     return db.query(models.PasswordResetToken).filter(
-        models.PasswordResetToken.token == token,
+        models.PasswordResetToken.token_hash == token_hash,
         models.PasswordResetToken.is_used == False,
         models.PasswordResetToken.expires_at > datetime.utcnow()
     ).first()

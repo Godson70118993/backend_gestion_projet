@@ -32,13 +32,28 @@ class User(UserBase):
 # Schémas pour la réinitialisation de mot de passe
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "user@example.com"
+            }
+        }
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
 
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
-
-class ForgotPasswordResponse(BaseModel):
-    message: str
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "token": "abc123def456",
+                "new_password": "MonNouveauMotDePasse123"
+            }
+        }
 
 class ResetPasswordResponse(BaseModel):
     message: str

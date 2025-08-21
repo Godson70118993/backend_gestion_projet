@@ -1,0 +1,17 @@
+# Fichiers d'environnement
+.env
+.env.local
+.env.production
+
+# Base de données
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
